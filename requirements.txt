@@ -1,0 +1,36 @@
+# =========================================================
+# FHE Medical Image Processor — Python Dependencies
+# Install with:  pip install -r requirements.txt
+# =========================================================
+
+# --- Web framework ---
+flask==3.0.3
+flask-cors==4.0.1
+
+# --- FHE (Fully Homomorphic Encryption) ---
+# concrete-ml is the main FHE + ML library by Zama
+# It wraps concrete-python which does the actual encryption
+concrete-ml==1.5.0
+
+# --- Image processing ---
+opencv-python-headless==4.9.0.80   # headless = no GUI, safe for servers
+Pillow==10.3.0                      # PIL — image open/save/convert
+pydicom==2.4.4                      # Read real DICOM medical files
+numpy==1.26.4
+
+# --- ML (scikit-learn models compile to FHE via Concrete-ML) ---
+scikit-learn==1.4.2
+torch==2.3.0                        # needed by some Concrete-ML internals
+torchvision==0.18.0
+
+# --- Utilities ---
+python-dotenv==1.0.1                # load .env config files
+werkzeug==3.0.3                     # Flask dependency, file handling
+requests==2.32.2                    # for optional API calls
+
+# =========================================================
+# NOTE: concrete-ml takes ~5 minutes to install.
+# If it fails, install concrete-python first:
+#   pip install concrete-python==2.6.0
+#   pip install concrete-ml==1.5.0
+# =========================================================

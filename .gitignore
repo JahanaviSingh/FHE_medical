@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+
+# Flask
+instance/
+.env
+*.sqlite3
+
+# Data / uploads (don't commit patient data!)
+data/uploads/
+data/samples/*.dcm
+data/samples/*.png
+data/samples/*.jpg
+
+# Compiled FHE circuits (large binary files)
+models/*.zip
+models/*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+venv311/*
+venv/*

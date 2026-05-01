@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FHE Medical Image Processor — M.Tech Research</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════
+     HEADER
+════════════════════════════════════════════════ -->
+<header class="app-header">
+  <div class="header-inner">
+    <div class="logo-block">
+      <div class="logo-icon">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <rect x="3" y="5" width="16" height="13" rx="2.5" stroke="white" stroke-width="1.4"/>
+          <path d="M11 8v6M8 11h6" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <h1>FHE Medical Image Processor</h1>
+        <p>ML-Enhanced Homomorphic Encryption · M.Tech Research Project</p>
+      </div>
+    </div>
+    <div class="header-badges">
+      <span class="badge badge-hipaa">HIPAA-compliant</span>
+      <span class="badge badge-fhe">CKKS / FHE</span>
+      <span class="badge badge-mode" id="modeIndicator">Concrete-ML</span>
+    </div>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <!-- ═══════════════════════════════════════════
+       STEP 1: MODALITY SELECTOR
+  ════════════════════════════════════════════ -->
+  <section class="card" id="step1">
+    <div class="card-header">
+      <span class="step-num">1</span>
+      <span class="card-title">Select scan modality</span>
+    </div>
+    <div class="mode-tabs" id="modeTabs">
+      <button class="mtab active" data-mode="xray">
+        <span class="mtab-icon">⬜</span>
+        <span class="mtab-name">Chest X-ray</span>
+        <span class="mtab-sub">NIH · RSNA</span>
+      </button>
+      <button class="mtab" data-mode="mri">
+        <span class="mtab-icon">◑</span>
+        <span class="mtab-name">Brain MRI</span>
+        <span class="mtab-sub">BraTS 2023</span>
+      </button>
+      <button class="mtab" data-mode="bone">
+        <span class="mtab-icon">⬛</span>
+        <span class="mtab-name">Bone X-ray</span>
+        <span class="mtab-sub">MURA</span>
+      </button>
+      <button class="mtab" data-mode="ct">
+        <span class="mtab-icon">◉</span>
+        <span class="mtab-name">CT Scan</span>
+        <span class="mtab-sub">TCIA</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       STEP 2: UPLOAD
+  ════════════════════════════════════════════ -->
+  <section class="card" id="step2">
+    <div class="card-header">
+      <span class="step-num">2</span>
+      <span class="card-title">Upload scan</span>
+    </div>
+
+    <div class="upload-row">
+      <div class="drop-zone" id="dropZone">
+        <div class="dz-icon">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+            <rect x="4" y="4" width="24" height="24" rx="4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.5"/>
+            <path d="M16 10v12M10 16h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <p class="dz-text">Drag &amp; drop scan here</p>
+        <p class="dz-hint">PNG · JPEG · DICOM (.dcm) · max 16 MB</p>
+        <div class="dz-buttons">
+          <button class="btn-outline" onclick="document.getElementById('fileInput').click()">Browse file</button>
+          <button class="btn-outline" id="demoBtn">Load demo scan</button>
+          <button class="btn-outline" id="invalidBtn">Test invalid image</button>
+        </div>
+        <input type="file" id="fileInput" accept="image/*,.dcm">
+      </div>
+
+      <!-- Validation result panel (shown after upload) -->
+      <div class="val-panel" id="valPanel" style="display:none">
+        <div class="val-banner" id="valBanner">
+          <div class="val-icon" id="valIcon"></div>
+          <div class="val-text">
+            <div class="val-title" id="valTitle">Validating...</div>
+            <div class="val-hint"  id="valHint"></div>
+          </div>
+        </div>
+        <div class="checks-grid" id="checksGrid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       STEP 3: OPERATION
+  ════════════════════════════════════════════ -->
+  <section class="card" id="step3">
+    <div class="card-header">
+      <span class="step-num">3</span>
+      <span class="card-title">Choose AI operation <span class="tag-fhe">runs on encrypted data</span></span>
+    </div>
+    <div class="op-grid" id="opGrid"></div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       STEP 4: PIPELINE (3 PANELS)
+  ════════════════════════════════════════════ -->
+  <section class="card" id="step4">
+    <div class="card-header">
+      <span class="step-num">4</span>
+      <span class="card-title">FHE pipeline</span>
+      <button class="btn-primary" id="runBtn" disabled>
+        Encrypt &amp; analyse
+      </button>
+    </div>
+
+    <!-- Pipeline stage indicator -->
+    <div class="pipeline-stages" id="pipelineStages">
+      <div class="ps" id="ps-upload">
+        <div class="ps-dot done"></div><span>Upload</span>
+      </div>
+      <div class="ps-arrow">→</div>
+      <div class="ps" id="ps-encrypt">
+        <div class="ps-dot"></div><span>FHE encrypt</span>
+      </div>
+      <div class="ps-arrow">→</div>
+      <div class="ps" id="ps-process">
+        <div class="ps-dot"></div><span>ML on ciphertext</span>
+      </div>
+      <div class="ps-arrow">→</div>
+      <div class="ps" id="ps-decrypt">
+        <div class="ps-dot"></div><span>Decrypt</span>
+      </div>
+      <div class="ps-arrow">→</div>
+      <div class="ps" id="ps-result">
+        <div class="ps-dot"></div><span>Result</span>
+      </div>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="progress-wrap" id="progressWrap" style="display:none">
+      <div class="prog-label" id="progLabel">Initializing...</div>
+      <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+    </div>
+
+    <!-- Three image panels -->
+    <div class="panels-row">
+      <div class="img-panel">
+        <div class="img-panel-header">
+          <span>Original scan</span>
+          <span class="tag tag-plain">plaintext</span>
+        </div>
+        <div class="img-panel-body" id="panel1">
+          <div class="img-placeholder" id="ph1">
+            <p>Upload a scan to begin</p>
+          </div>
+          <canvas id="c1" style="display:none"></canvas>
+          <div class="rejected-overlay" id="rejOverlay" style="display:none">
+            <div class="rej-icon">✕</div>
+            <p id="rejText">Not a valid scan</p>
+            <small id="rejHint">Upload a medical image</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="img-panel">
+        <div class="img-panel-header">
+          <span>FHE ciphertext</span>
+          <span class="tag tag-enc">encrypted</span>
+        </div>
+        <div class="img-panel-body" id="panel2">
+          <div class="img-placeholder" id="ph2">
+            <p>Server sees only this</p>
+          </div>
+          <canvas id="c2" style="display:none"></canvas>
+        </div>
+        <div class="panel-note">Server cannot recover image from this</div>
+      </div>
+
+      <div class="img-panel">
+        <div class="img-panel-header">
+          <span>AI result (decrypted)</span>
+          <span class="tag tag-wait" id="tag3">pending</span>
+        </div>
+        <div class="img-panel-body" id="panel3">
+          <div class="img-placeholder" id="ph3">
+            <p>Run pipeline to see result</p>
+          </div>
+          <canvas id="c3" style="display:none"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       STEP 5: DIAGNOSIS + PRIVACY METRICS
+  ════════════════════════════════════════════ -->
+  <section class="card" id="step5" style="display:none">
+    <div class="card-header">
+      <span class="step-num">5</span>
+      <span class="card-title">Diagnosis &amp; privacy report</span>
+    </div>
+
+    <div class="results-grid">
+      <!-- Diagnosis -->
+      <div class="diag-block" id="diagBlock">
+        <div class="diag-top">
+          <div class="diag-condition" id="diagCondition">—</div>
+          <div class="risk-badge" id="riskBadge" style="display:none"></div>
+        </div>
+        <div class="diag-model" id="diagModel"></div>
+        <div class="findings-grid" id="findingsGrid"></div>
+        <div class="differentials" id="diffRows"></div>
+      </div>
+
+      <!-- Privacy metrics -->
+      <div class="metrics-block">
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="metric-label">Patient data seen by server</div>
+            <div class="metric-val green">0%</div>
+            <div class="metric-sub">FHE mathematical guarantee</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Privacy score</div>
+            <div class="metric-val" id="mPrivacy">—</div>
+            <div class="metric-sub">out of 100</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Ciphertext expansion</div>
+            <div class="metric-val" id="mExpansion">—</div>
+            <div class="metric-sub">vs original size</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Total pipeline time</div>
+            <div class="metric-val" id="mTime">—</div>
+            <div class="metric-sub">encrypt + process + decrypt</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">FHE scheme</div>
+            <div class="metric-val small">CKKS</div>
+            <div class="metric-sub">Concrete-ML / Zama</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Security parameter λ</div>
+            <div class="metric-val" id="mSecurity">128 bits</div>
+            <div class="metric-sub">post-quantum ready</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       LOG
+  ════════════════════════════════════════════ -->
+  <section class="card">
+    <div class="card-header">
+      <span class="card-title">Pipeline log</span>
+      <button class="btn-link" onclick="clearLog()">Clear</button>
+    </div>
+    <div class="log-body" id="logBody">
+      <div class="log-entry"><span class="log-ts">00:00</span><span>FHE Medical Pipeline ready</span></div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
