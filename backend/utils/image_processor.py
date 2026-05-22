@@ -137,42 +137,31 @@ class ImageProcessor:
 
     def tumor_boundary(self, img: np.ndarray) -> np.ndarray:
         """
-        Brain MRI tumour segmentation — full pipeline:
-          1. Normalize → BraTS-compatible uint16 256×256
-          2. Skull strip → HD-BET-style morphological stripping
-          3. BraTS U-Net → NCR / ED / ET segmentation
-          4. Return colour overlay with tumour contours + legend
-
-        Falls back to classical Otsu + contour if brain module fails.
-        To use real BraTS weights: see backend/models/brain.py
+        Highlight potential tumor boundary using thresholding + contour overlay.
+        FHE equivalent: U-Net-style polynomial segmentation circuit.
         """
-        try:
-            from backend.models.brain import preprocess_brain
-            pipeline_result = preprocess_brain(img)
-            logger.info(
-                f"Brain pipeline: {pipeline_result.skull_strip.method} | "
-                f"tumour={'yes' if pipeline_result.brats.has_tumour else 'no'} | "
-                f"{pipeline_result.total_elapsed_ms:.0f}ms"
-            )
-            return pipeline_result.display_image
-        except Exception as e:
-            logger.warning(f"Brain pipeline error ({e}) — using CV fallback")
-            gray  = self.to_grayscale(img)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
-            eq    = clahe.apply(gray)
-            _, mask = cv2.threshold(eq, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            mask    = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                           cv2.CHAIN_APPROX_SIMPLE)
-            result = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
-            cv2.drawContours(result, contours, -1, (50, 50, 220), 2)
-            if contours:
-                largest = max(contours, key=cv2.contourArea)
-                overlay = result.copy()
-                cv2.drawContours(overlay, [largest], -1, (30, 30, 200), -1)
-                result  = cv2.addWeighted(result, 0.75, overlay, 0.25, 0)
-            return result
+        gray  = self.to_grayscale(img)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+        eq    = clahe.apply(gray)
+
+        # Otsu threshold to find bright regions (tumors are bright on T1+)
+        _, mask = cv2.threshold(eq, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask    = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        result = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+
+        # Draw contours in blue (BGR: 220, 80, 50)
+        cv2.drawContours(result, contours, -1, (220, 80, 50), 2)
+
+        # Highlight largest contour (likely tumor)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            overlay = result.copy()
+            cv2.drawContours(overlay, [largest], -1, (200, 60, 30), -1)
+            result  = cv2.addWeighted(result, 0.75, overlay, 0.25, 0)
+        return result
 
     def mri_denoise(self, img: np.ndarray) -> np.ndarray:
         """
@@ -206,22 +195,32 @@ class ImageProcessor:
     def fracture_enhance(self, img: np.ndarray) -> np.ndarray:
         """
         Enhance fracture lines using Canny edges + gradient magnitude.
+        Edges rendered as a yellow semi-transparent overlay so the
+        underlying anatomy stays visible (was: hard red pixel replacement
+        which flooded the entire image on dense bone X-rays like pelvis).
         """
         gray  = self.to_grayscale(img)
         clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
         eq    = clahe.apply(gray)
 
-        edges = cv2.Canny(eq, 80, 180)
+        edges   = cv2.Canny(eq, 80, 180)
         dilated = cv2.dilate(edges, np.ones((2, 2), np.uint8), iterations=1)
 
-        result  = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
-        # Draw fracture candidates in red
-        result[dilated > 0] = [30, 30, 200]
+        # Base: sharpened grayscale so anatomy is clear
+        blur   = cv2.GaussianBlur(eq, (0, 0), 1.5)
+        sharp  = cv2.addWeighted(eq, 1.6, blur, -0.6, 0)
+        result = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
 
-        # Highlight probable fracture zone
+        # Semi-transparent yellow edge overlay (not a hard replacement)
+        # Yellow = (0, 220, 255) in BGR
+        overlay          = result.copy()
+        overlay[dilated > 0] = (0, 210, 255)           # yellow edges
+        result = cv2.addWeighted(result, 0.60, overlay, 0.40, 0)
+
+        # Probable fracture zone: yellow circle, not red
         h, w   = eq.shape
         cx, cy = int(w * 0.5), int(h * 0.55)
-        cv2.circle(result, (cx, cy), int(w * 0.1), (40, 40, 230), 2)
+        cv2.circle(result, (cx, cy), int(w * 0.10), (30, 40, 220), 2)  # red ring
         return result
 
     def edge_enhance(self, img: np.ndarray) -> np.ndarray:

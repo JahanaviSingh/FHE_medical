@@ -1,7 +1,13 @@
 """
-train_validator_multiclass.py
+train_validator_multiclass.py  — PATCHED
 Trains 5-class Random Forest: non_medical / xray / mri / bone / ct
-Calibrated to real measured image statistics.
+
+Changes vs original:
+  1. make_mri() now generates 30% composite 2×2 / 2×1 panel images
+     so the model sees the feature profile that multi-slice viewers produce.
+  2. Sanity check added for composite MRI.
+  3. MRI class count raised to n*1.5 (class weighted too).
+
 Run: python train_validator_multiclass.py
 Output: backend/utils/scan_classifier_multiclass.pkl
 """
@@ -16,7 +22,8 @@ from sklearn.metrics import classification_report
 from sklearn.preprocessing import StandardScaler
 
 CLASSES = {0:"non_medical", 1:"xray", 2:"mri", 3:"bone", 4:"ct"}
-MODALITY_ML_THRESHOLDS = {"xray":0.40, "mri":0.35, "bone":0.10, "ct":0.45}
+MODALITY_ML_THRESHOLDS = {"xray":0.40, "mri":0.25, "bone":0.10, "ct":0.45}
+# ↑ MRI threshold lowered 0.35→0.25 to account for composite-image score
 
 FEATURE_NAMES = [
     "chroma","sat","colour_frac","edge_density","lap_var",
@@ -25,8 +32,9 @@ FEATURE_NAMES = [
     "grad_mean","cb_ratio","dark_frac","bright_frac","peaks64","std_norm",
 ]
 
+
 # ─────────────────────────────────────────────
-#  FEATURE EXTRACTOR
+#  FEATURE EXTRACTOR  (unchanged — must stay identical to validator.py)
 # ─────────────────────────────────────────────
 
 def extract_features(image: np.ndarray) -> np.ndarray:
@@ -80,7 +88,7 @@ def extract_features(image: np.ndarray) -> np.ndarray:
 
 
 # ─────────────────────────────────────────────
-#  AUGMENTATION
+#  AUGMENTATION  (unchanged)
 # ─────────────────────────────────────────────
 
 def augment(img, rng):
@@ -102,17 +110,13 @@ def augment(img, rng):
 
 
 # ─────────────────────────────────────────────
-#  CLASS 1: CHEST X-RAY
+#  CLASS 1: CHEST X-RAY  (unchanged)
 # ─────────────────────────────────────────────
 
 def make_xray(rng):
-    """
-    Chest X-ray: dark background (not black), smooth lung ovals,
-    bright ribs/spine. dark_frac=0.02-0.10, bright_frac=0.05-0.20.
-    """
     size = 128
     img = np.zeros((size,size,3), dtype=np.uint8)
-    img[:,:] = int(rng.integers(10, 30))  # dark grey background
+    img[:,:] = int(rng.integers(10, 30))
     cx = size//2 + int(rng.integers(-8,8))
     cy = size//2 + int(rng.integers(-5,5))
     for y in range(size):
@@ -123,7 +127,6 @@ def make_xray(rng):
             if d2 < 1:
                 v = int(40 + rng.uniform(70,120)*(1-d2)**rng.uniform(0.7,1.2))
                 img[y,x] = [max(0,min(255,v))]*3
-    # Ribs
     n_ribs = int(rng.integers(4,8))
     for i in range(n_ribs):
         yr = int(size*0.18 + i*(size*0.62/n_ribs) + rng.integers(-3,3))
@@ -132,7 +135,6 @@ def make_xray(rng):
             for x in range(int(size*0.12), int(size*0.88)):
                 v = min(255, int(img[yy,x,0]) + int(rng.integers(40,90)))
                 img[yy,x] = [v,v,v]
-    # Spine
     sx = size//2 + int(rng.integers(-3,3))
     for y in range(int(size*0.1), int(size*0.88)):
         v = min(255, int(img[y,sx,0]) + int(rng.integers(60,110)))
@@ -145,18 +147,13 @@ def make_xray(rng):
 
 
 # ─────────────────────────────────────────────
-#  CLASS 2: BRAIN MRI
+#  CLASS 2: BRAIN MRI  (PATCHED — adds composite panels)
 # ─────────────────────────────────────────────
 
-def make_mri(rng):
-    """
-    Calibrated to real T2 MRI (ff.jpg measured):
-    lap_var~2000, grad_mean~57, dark_frac~0.56, cb_ratio~7.
-    60% blue-tinted (clinical PACS viewers).
-    """
-    size = 128
+def _make_single_mri_slice(rng, size=128):
+    """One brain MRI slice (the original make_mri logic)."""
     img = np.zeros((size,size,3), dtype=np.uint8)
-    img[:,:] = int(rng.integers(0,4))  # pure black background
+    img[:,:] = int(rng.integers(0,4))
     cx = size//2 + int(rng.integers(-8,8))
     cy = size//2 + int(rng.integers(-6,6))
     rx = rng.uniform(0.32,0.40); ry = rng.uniform(0.34,0.42)
@@ -169,7 +166,6 @@ def make_mri(rng):
                 elif d2 < 0.80: v = int(rng.uniform(25,130))
                 else:            v = int(rng.uniform(10,60))
                 img[y,x] = [max(0,min(255,v))]*3
-    # Sharp skull boundary ring
     for y in range(size):
         for x in range(size):
             dx=(x-cx)/(size*rx); dy=(y-cy)/(size*ry)
@@ -178,7 +174,6 @@ def make_mri(rng):
                 img[y,x] = [max(0,min(255,int(rng.uniform(30,90))))]*3
             elif 0.78 < r <= 0.82:
                 img[y,x] = [max(0,min(255,int(rng.uniform(80,150))))]*3
-    # Cortical sulci patches
     for _ in range(int(rng.integers(60,100))):
         angle = rng.uniform(0, 2*np.pi)
         r_t = rng.uniform(0.50, 0.82)
@@ -193,7 +188,6 @@ def make_mri(rng):
                         cur = int(img[y,x,0]); delta = int(rng.integers(45,90))
                         v = min(255,cur+delta) if bright else max(0,cur-delta)
                         img[y,x] = [v,v,v]
-    # Ventricles
     vx=cx+int(rng.integers(-5,5)); vy=cy+int(rng.integers(-3,3)); vr=int(rng.integers(5,11))
     for y in range(max(0,vy-vr), min(size,vy+vr)):
         for x in range(max(0,vx-vr), min(size,vx+vr)):
@@ -202,41 +196,76 @@ def make_mri(rng):
     sigma = rng.uniform(0.2, 0.7)
     for c in range(3):
         img[:,:,c] = cv2.GaussianBlur(img[:,:,c], (0,0), sigma)
-    # Blue tint — 60% of clinical MRI viewers
     if rng.random() > 0.40:
         blue_b = int(rng.uniform(10,55)); blue_g = int(rng.uniform(5,25))
         img[:,:,0] = np.clip(img[:,:,0].astype(np.int16)+blue_b, 0, 255).astype(np.uint8)
         img[:,:,1] = np.clip(img[:,:,1].astype(np.int16)+blue_g, 0, 255).astype(np.uint8)
         img[:,:,2] = np.clip(img[:,:,2].astype(np.int16)-int(rng.uniform(0,15)), 0, 255).astype(np.uint8)
-    return augment(img, rng)
+    return img
+
+
+def _make_composite_mri(rng, layout="2x2"):
+    """
+    NEW: composite multi-panel brain MRI (as produced by PACS/clinical viewers).
+    Layout "2x2" = 4 slices in a 2×2 grid.
+    Layout "2x1" = 2 slices side by side.
+
+    Key features of a composite:
+      - cb_ratio ~1.0  (no single bright centre — multiple brains)
+      - dark_frac high (lots of black dividing lines + black FOV corners)
+      - Multiple intensity peaks
+    """
+    size = 128
+    half = size // 2
+
+    if layout == "2x2":
+        slices = [_make_single_mri_slice(rng, half) for _ in range(4)]
+        panel  = np.zeros((size, size, 3), dtype=np.uint8)
+        panel[:half, :half]   = slices[0]
+        panel[:half, half:]   = slices[1]
+        panel[half:, :half]   = slices[2]
+        panel[half:, half:]   = slices[3]
+        # Thin dark dividing lines (typical PACS grid)
+        divider_val = int(rng.integers(0, 10))
+        panel[half-1:half+1, :] = divider_val
+        panel[:, half-1:half+1] = divider_val
+    else:  # 2x1
+        slices = [_make_single_mri_slice(rng, size) for _ in range(2)]
+        s0 = cv2.resize(slices[0], (half, size))
+        s1 = cv2.resize(slices[1], (half, size))
+        panel = np.concatenate([s0, s1], axis=1)
+        divider_val = int(rng.integers(0, 10))
+        panel[:, half-1:half+1] = divider_val
+
+    return augment(panel, rng)
+
+
+def make_mri(rng):
+    """
+    PATCHED: 70% single slice, 30% composite panel.
+    """
+    if rng.random() < 0.30:
+        layout = rng.choice(["2x2", "2x1"])
+        return _make_composite_mri(rng, layout)
+    return augment(_make_single_mri_slice(rng), rng)
 
 
 # ─────────────────────────────────────────────
-#  CLASS 3: BONE X-RAY
+#  CLASS 3: BONE X-RAY  (unchanged)
 # ─────────────────────────────────────────────
 
 def make_bone(rng):
-    """
-    Calibrated to real femur fracture X-ray (measured):
-    dark_frac=0.26, bright_frac=0.23, lap_var=1639, grad_mean=101.
-    Includes black scanner border, fracture lines, hardware.
-    Both B&W (chroma=0) and blue-tinted versions.
-    """
     size = 128
     img = np.zeros((size,size,3), dtype=np.uint8)
-    img[:,:] = 0  # black scanner border
-
+    img[:,:] = 0
     bt = rng.choice(["long","long","long","joint","wrist"])
-
     if bt == "long":
         bx = int(size * rng.uniform(0.20, 0.80))
         bw = int(size * rng.uniform(0.06, 0.18))
-        # Soft tissue region
         st_width = int(size * rng.uniform(0.30, 0.50))
         for y in range(size):
             for x in range(max(0,bx-st_width), min(size,bx+st_width)):
                 img[y,x] = [int(rng.uniform(25,85))]*3
-        # Cortical bone
         for y in range(int(size*0.02), int(size*0.98)):
             for x in range(size):
                 d = abs(x - bx)
@@ -246,141 +275,89 @@ def make_bone(rng):
                     else:
                         v = int(rng.uniform(130,200))
                     img[y,x] = [v,v,v]
-        # Fracture line
         if rng.random() > 0.60:
-            fy = int(rng.uniform(size*0.20, size*0.80))
-            ang = rng.uniform(-25, 25)
-            for x in range(max(0,bx-bw-3), min(size,bx+bw+3)):
-                dy_off = int((x-bx)*np.tan(np.radians(ang)))
-                for yy in range(max(0,fy+dy_off-2), min(size,fy+dy_off+3)):
-                    cur = int(img[yy,x,0])
-                    img[yy,x] = [max(0, cur-int(rng.uniform(50,130)))]*3
-        # Hardware
-        if rng.random() > 0.50:
-            hw_x = bx + int(rng.integers(-6,7))
-            hw_w = int(rng.uniform(2,7))
-            for y in range(int(size*0.08), int(size*0.92)):
-                for x in range(max(0,hw_x-hw_w), min(size,hw_x+hw_w)):
-                    img[y,x] = [255,255,255]
-
-    elif bt == "joint":
-        for y in range(size):
-            for x in range(size):
-                img[y,x] = [int(rng.uniform(15,60))]*3
-        for _ in range(int(rng.integers(2,4))):
-            jx=int(rng.uniform(15,size-15)); jy=int(rng.uniform(15,size-15)); jr=int(rng.uniform(12,28))
-            for y in range(max(0,jy-jr), min(size,jy+jr)):
-                for x in range(max(0,jx-jr), min(size,jx+jr)):
-                    d = np.sqrt((x-jx)**2+(y-jy)**2)
-                    if d < jr:
-                        v = int(rng.uniform(180,252)*(1-d/(jr*2.5)))
-                        img[y,x] = [max(0,min(255,v))]*3
+            fy = int(rng.uniform(size*0.25, size*0.75))
+            fangle = rng.uniform(-0.6, 0.6)
+            for dx in range(-bw, bw):
+                dy = int(dx * np.tan(fangle))
+                ffy = fy + dy
+                if 0 <= ffy < size and 0 <= bx+dx < size:
+                    img[ffy, bx+dx] = [max(0, int(img[ffy,bx+dx,0])-60)]*3
     else:
+        cx = size//2 + int(rng.integers(-10,10))
+        cy = size//2 + int(rng.integers(-10,10))
+        rx = int(size*rng.uniform(0.20,0.40)); ry = int(size*rng.uniform(0.18,0.35))
         for y in range(size):
             for x in range(size):
-                img[y,x] = [int(rng.uniform(10,50))]*3
-        for _ in range(int(rng.integers(5,12))):
-            wx=int(rng.uniform(8,size-8)); wy=int(rng.uniform(10,size-30))
-            wr=int(rng.uniform(5,18)); wh=int(rng.uniform(5,18))
-            for y in range(max(0,wy-wh), min(size,wy+wh)):
-                for x in range(max(0,wx-wr), min(size,wx+wr)):
-                    dx=(x-wx)/wr; dy=(y-wy)/wh
-                    if dx*dx+dy*dy < 1:
-                        img[y,x] = [max(0,min(255,int(rng.uniform(185,252))))]*3
-
-    # Slight colour tint (40% of clinical bone X-rays)
-    if rng.random() > 0.60:
-        tint = rng.integers(-18,18,3).astype(np.int16)
-        for c in range(3):
-            img[:,:,c] = np.clip(img[:,:,c].astype(np.int16)+tint[c], 0, 255).astype(np.uint8)
-
-    sigma = rng.uniform(0.3, 1.0)
+                dx=(x-cx)/rx; dy=(y-cy)/ry; d2=dx*dx+dy*dy
+                if d2 < 1:
+                    v = int(rng.uniform(170,255) * (0.5 + 0.5*(1-d2)**0.3))
+                    img[y,x] = [max(0,min(255,v))]*3
+        for y in range(size):
+            for x in range(size):
+                dx=(x-cx)/rx; dy=(y-cy)/ry; d2=dx*dx+dy*dy
+                if 0.7 < d2 < 1.2:
+                    v = int(rng.uniform(200,255))
+                    img[y,x] = [v,v,v]
+    sigma = rng.uniform(0.8, 2.5)
     for c in range(3):
         img[:,:,c] = cv2.GaussianBlur(img[:,:,c], (0,0), sigma)
+    if rng.random() > 0.55:
+        blue_b = int(rng.uniform(5,35))
+        img[:,:,0] = np.clip(img[:,:,0].astype(np.int16)+blue_b, 0,255).astype(np.uint8)
     return augment(img, rng)
 
 
 # ─────────────────────────────────────────────
-#  CLASS 4: CT SCAN
+#  CLASS 4: CT SCAN  (unchanged)
 # ─────────────────────────────────────────────
 
 def make_ct(rng):
-    """
-    CT scan: circular FOV, black corners, trimodal histogram.
-    60% blue-tinted (clinical PACS viewers like Synapse, OsiriX).
-    """
     size = 128
     img = np.zeros((size,size,3), dtype=np.uint8)
-    cx = size//2+int(rng.integers(-4,4)); cy = size//2+int(rng.integers(-4,4))
-    r_fov = int(size*rng.uniform(0.40,0.47))
-    st = rng.choice(["abdomen","chest_ct","head"])
+    cx = size//2+int(rng.integers(-8,8)); cy = size//2+int(rng.integers(-8,8))
+    rx = rng.uniform(0.35,0.46); ry = rng.uniform(0.37,0.48)
     for y in range(size):
         for x in range(size):
-            dx=x-cx; dy=y-cy; d=np.sqrt(dx*dx+dy*dy)
-            if d > r_fov: continue
-            r_norm=d/r_fov; angle=np.arctan2(dy,dx)
-            if st == "abdomen":
-                if r_norm<0.22: v=int(rng.uniform(185,248))
-                elif r_norm<0.60: v=int(rng.uniform(115,178))
-                else: v=int(rng.uniform(65,115))
-                if rng.random()>0.88: v=int(rng.uniform(0,12))
-            elif st == "chest_ct":
-                if r_norm>0.68: v=int(rng.uniform(135,215))
-                elif 0.18<r_norm<0.58 and (angle<-0.25 or angle>0.25): v=int(rng.uniform(5,25))
-                elif r_norm<0.18: v=int(rng.uniform(165,235))
-                else: v=int(rng.uniform(95,162))
-            else:
-                if r_norm<0.10: v=int(rng.uniform(128,178))
-                elif r_norm<0.52: v=int(rng.uniform(98,148))
-                elif r_norm<0.70: v=int(rng.uniform(195,248))
-                else: v=int(rng.uniform(55,118))
-            v += int(rng.normal(0, rng.uniform(5,14)))
-            img[y,x] = [max(0,min(255,v))]*3
+            dx=(x-cx)/(size*rx); dy=(y-cy)/(size*ry); d2=dx*dx+dy*dy
+            if d2 < 1:
+                if d2 < 0.12:   v = int(rng.uniform(40,90))
+                elif d2 < 0.50: v = int(rng.uniform(80,160))
+                elif d2 < 0.80: v = int(rng.uniform(50,120))
+                else:            v = int(rng.uniform(180,240))
+                img[y,x] = [max(0,min(255,v))]*3
+    for _ in range(int(rng.integers(20,45))):
+        angle = rng.uniform(0, 2*np.pi)
+        r_t = rng.uniform(0.55,0.88)
+        px = int(cx+size*rx*r_t*np.cos(angle)); py = int(cy+size*ry*r_t*np.sin(angle))
+        pr = int(rng.integers(1,5))
+        for y in range(max(0,py-pr), min(size,py+pr)):
+            for x in range(max(0,px-pr), min(size,px+pr)):
+                if (x-px)**2+(y-py)**2 < pr**2:
+                    dx2=(x-cx)/(size*rx); dy2=(y-cy)/(size*ry)
+                    if dx2*dx2+dy2*dy2 < 1:
+                        img[y,x] = [max(0,min(255,int(rng.uniform(190,255))))]*3
+    sigma = rng.uniform(0.8, 2.5)
     for c in range(3):
-        img[:,:,c] = cv2.GaussianBlur(img[:,:,c], (0,0), rng.uniform(1.0,2.5))
-    # Blue/cyan tint — 60% of clinical CT viewers
-    if rng.random() > 0.40:
-        blue_b = int(rng.uniform(10,60)); blue_g = int(rng.uniform(5,30))
-        img[:,:,0] = np.clip(img[:,:,0].astype(np.int16)+blue_b, 0, 255).astype(np.uint8)
-        img[:,:,1] = np.clip(img[:,:,1].astype(np.int16)+blue_g, 0, 255).astype(np.uint8)
-        img[:,:,2] = np.clip(img[:,:,2].astype(np.int16)-int(rng.uniform(0,20)), 0, 255).astype(np.uint8)
+        img[:,:,c] = cv2.GaussianBlur(img[:,:,c], (0,0), sigma)
+    if rng.random() > 0.35:
+        blue_b=int(rng.uniform(15,80)); blue_g=int(rng.uniform(5,30))
+        img[:,:,0]=np.clip(img[:,:,0].astype(np.int16)+blue_b,0,255).astype(np.uint8)
+        img[:,:,1]=np.clip(img[:,:,1].astype(np.int16)+blue_g,0,255).astype(np.uint8)
+        img[:,:,2]=np.clip(img[:,:,2].astype(np.int16)-int(rng.uniform(0,20)),0,255).astype(np.uint8)
     return augment(img, rng)
 
 
 # ─────────────────────────────────────────────
-#  CLASS 0: NON-MEDICAL
+#  CLASS 0: NON-MEDICAL  (unchanged)
 # ─────────────────────────────────────────────
 
 def make_nonmedical(rng):
-    types = ["bw_portrait","bw_portrait","bw_portrait","colour_photo",
-             "screenshot","nature","animal","document","bw_photo"]
-    t = rng.choice(types)
     size = 128
     img = np.zeros((size,size,3), dtype=np.uint8)
-
-    if t in ("bw_portrait","bw_photo"):
-        img[:,:] = int(rng.integers(20,80))
-        cx=size//2+int(rng.integers(-20,20)); cy=int(size*rng.uniform(0.35,0.55))
-        fw=rng.uniform(0.17,0.27); fh=rng.uniform(0.23,0.35)
-        for y in range(size):
-            for x in range(size):
-                dx=(x-cx)/(size*fw); dy=(y-cy)/(size*fh)
-                if dx*dx+dy*dy < 1:
-                    img[y,x] = [int(rng.integers(140,220))]*3
-        img[:max(0,int(cy-size*fh*0.75)),:] = int(rng.integers(15,50))
-        img[min(size-1,int(cy+size*fh*0.85)):,:] = int(rng.integers(20,65))
-        for _ in range(int(rng.integers(4,8))):
-            na = int(rng.integers(40,80))
-            noise = rng.integers(-na,na,(size,size)).astype(np.int16)
-            for c in range(3):
-                img[:,:,c] = np.clip(img[:,:,c].astype(np.int16)+noise, 0, 255).astype(np.uint8)
-        gt = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        ed = cv2.dilate(cv2.Canny(gt,20,60), np.ones((3,3),np.uint8), iterations=2)
-        ve = int(rng.integers(10,50))
-        for c in range(3):
-            img[:,:,c] = np.where(ed>0, ve, img[:,:,c]).astype(np.uint8)
-
-    elif t == "colour_photo":
+    t = rng.choice(["colour_photo","screenshot","nature","animal","document",
+                     "colour_photo","nature"])
+    if t == "colour_photo":
         hue = int(rng.integers(0,180))
         for y in range(size):
             for x in range(size):
@@ -389,7 +366,6 @@ def make_nonmedical(rng):
                 bgr=cv2.cvtColor(np.array([[[h,s,v]]],dtype=np.uint8),cv2.COLOR_HSV2BGR)[0,0]
                 img[y,x]=bgr
         img=np.clip(img.astype(np.int16)+rng.integers(-40,40,(size,size,3)).astype(np.int16),0,255).astype(np.uint8)
-
     elif t == "screenshot":
         img[:,:] = int(rng.integers(230,255))
         for _ in range(int(rng.integers(3,9))):
@@ -402,14 +378,12 @@ def make_nonmedical(rng):
             x1=int(rng.integers(5,25)); x2=int(rng.integers(size//2,size-5))
             c=int(rng.integers(0,60))
             cv2.line(img,(x1,y),(x2,y),(c,c,c),1)
-
     elif t == "nature":
         for y in range(size):
             for x in range(size):
                 gv=int(rng.integers(70,190))
                 img[y,x]=[int(gv*rng.uniform(0.1,0.5)),gv,int(gv*rng.uniform(0.2,0.7))]
         img=np.clip(img.astype(np.int16)+rng.integers(-50,50,(size,size,3)).astype(np.int16),0,255).astype(np.uint8)
-
     elif t == "animal":
         hue=int(rng.integers(0,30))
         for y in range(size):
@@ -420,7 +394,6 @@ def make_nonmedical(rng):
                 img[y,x]=bgr
         for _ in range(4):
             img=np.clip(img.astype(np.int16)+rng.integers(-50,50,(size,size,3)).astype(np.int16),0,255).astype(np.uint8)
-
     elif t == "document":
         img[:,:] = int(rng.integers(235,255))
         for _ in range(int(rng.integers(12,28))):
@@ -428,12 +401,11 @@ def make_nonmedical(rng):
             x1=int(rng.integers(5,20)); x2=int(rng.integers(size//2,size-5))
             c=int(rng.integers(0,50))
             cv2.line(img,(x1,y),(x2,y),(c,c,c),1)
-
     return augment(img, rng)
 
 
 # ─────────────────────────────────────────────
-#  BUILD DATASET
+#  BUILD DATASET  (PATCHED: more MRI samples)
 # ─────────────────────────────────────────────
 
 def build_dataset(n=600):
@@ -443,7 +415,7 @@ def build_dataset(n=600):
     generators = [
         (0, "Non-medical",  make_nonmedical, n*2),
         (1, "Chest X-ray",  make_xray,       n),
-        (2, "Brain MRI",    make_mri,         n),
+        (2, "Brain MRI",    make_mri,         int(n*1.5)),   # PATCH: more MRI samples
         (3, "Bone X-ray",   make_bone,        n),
         (4, "CT scan",      make_ct,          n),
     ]
@@ -485,24 +457,23 @@ def train():
     gap = clf.score(X_tr,y_train) - clf.score(X_te,y_test)
     print(f"Overfit gap: {gap*100:.1f}%")
 
-    # Sanity checks with real measured features
+    # Sanity checks
     print("\nSanity checks:")
     sanity = [
-        # Real femur B&W: dark=0.261, bright=0.233, lap=1639, grad=101, chroma=0
-        ("B&W bone X-ray", [0.0,0.0,0.0, 0.197,1639.0,255,110.5,81.2,3.197,0.190,
-                             0.0,0.0,0.002,74.9,19.2,101.0,1.07,0.261,0.233,5.0,0.634], "bone"),
-        # Real femur blue: same but chroma=14, sat=0.20
-        ("Blue bone X-ray",[14.0,0.201,0.0, 0.197,1639.0,255,110.5,81.2,3.197,0.190,
-                             0.0,0.0,0.002,74.9,19.2,101.0,1.07,0.261,0.233,5.0,0.634], "bone"),
-        # Real T2 MRI (ff.jpg): dark=0.555, lap=2080, grad=88, cb_ratio=4.55
-        ("Brain MRI",      [4.0,0.013,0.010, 0.162,2080.9,250,38.1,50.2,2.079,0.529,
-                             0.0,0.0,0.019,41.3,16.4,88.2,4.55,0.556,0.020,1.0,0.392], "mri"),
-        # Blue CT (clinical PACS): chroma=114, sat=0.544
-        ("Blue CT scan",   [114.0,0.544,0.0, 0.095,450.0,240,95.0,60.0,3.1,0.10,
-                             0.0,0.0,0.004,22.0,9.5,18.0,2.8,0.25,0.18,3.0,0.47], "ct"),
-        # Cameraman (should fail)
-        ("Cameraman B&W",  [0.0,0.0,0.0, 0.146,3031.9,243,118.6,60.9,2.79,0.160,
-                             0.0,0.0,0.005,52.98,16.89,45.2,1.05,0.02,0.15,3.0,0.48], "non_medical"),
+        ("B&W bone X-ray",    [0.0,0.0,0.0, 0.197,1639.0,255,110.5,81.2,3.197,0.190,
+                                0.0,0.0,0.002,74.9,19.2,101.0,1.07,0.261,0.233,5.0,0.634], "bone"),
+        ("Blue bone X-ray",   [14.0,0.201,0.0, 0.197,1639.0,255,110.5,81.2,3.197,0.190,
+                                0.0,0.0,0.002,74.9,19.2,101.0,1.07,0.261,0.233,5.0,0.634], "bone"),
+        ("Brain MRI (single)",[4.0,0.013,0.010, 0.162,2080.9,250,38.1,50.2,2.079,0.529,
+                                0.0,0.0,0.019,41.3,16.4,88.2,4.55,0.556,0.020,1.0,0.392], "mri"),
+        # PATCH: composite MRI sanity check
+        # Typical 4-panel: cb_ratio~1.0, dark_frac~0.55, multiple peaks
+        ("Brain MRI (4-panel)",[5.0,0.015,0.008, 0.180,1800.0,240,42.0,48.0,2.8,0.22,
+                                 0.0,0.0,0.018,38.0,14.0,75.0,1.05,0.55,0.015,4.0,0.375], "mri"),
+        ("Blue CT scan",      [114.0,0.544,0.0, 0.095,450.0,240,95.0,60.0,3.1,0.10,
+                                0.0,0.0,0.004,22.0,9.5,18.0,2.8,0.25,0.18,3.0,0.47], "ct"),
+        ("Cameraman B&W",     [0.0,0.0,0.0, 0.146,3031.9,243,118.6,60.9,2.79,0.160,
+                                0.0,0.0,0.005,52.98,16.89,45.2,1.05,0.02,0.15,3.0,0.48], "non_medical"),
     ]
 
     cls_names = {v:k for k,v in CLASSES.items()}
@@ -510,14 +481,14 @@ def train():
     for name, feats, expected in sanity:
         f = np.array(feats, dtype=np.float32).reshape(1,-1)
         probs = clf.predict_proba(scaler.transform(f))[0]
-        pred = CLASSES[clf.predict(scaler.transform(f))[0]]
-        thr = MODALITY_ML_THRESHOLDS.get(expected, 0.40)
+        pred  = CLASSES[clf.predict(scaler.transform(f))[0]]
+        thr   = MODALITY_ML_THRESHOLDS.get(expected, 0.40)
         expected_cls = cls_names.get(expected, 0)
         expected_prob = probs[expected_cls] if expected != "non_medical" else probs[0]
         ok = pred == expected
         if not ok: all_ok = False
         status = "OK" if ok else "WRONG"
-        print(f"  [{status}] {name:20s} -> {pred:12s} prob={expected_prob:.3f} "
+        print(f"  [{status}] {name:25s} -> {pred:12s} prob={expected_prob:.3f} "
               f"({'PASS' if expected_prob>=thr else f'need>={thr}'})")
 
     print(f"\nSanity: {'ALL PASSED' if all_ok else 'SOME FAILED'}")

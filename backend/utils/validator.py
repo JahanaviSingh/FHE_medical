@@ -12,6 +12,11 @@ Fixed issues:
 8. Full debug logging of every feature + per-class probability
 9. Score-based fallback for bone when ML uncertain
 10. Grayscale images handled consistently
+11. extreme_thr raised to 0.75 for bone (black bg + bright cortex routinely
+    exceeds 0.40 threshold; previously caused false "document" rejection)
+12. check_gradient_isotropy() now pre-crops dark lateral collimation strips
+    before computing gradient angles — fixes isotropy=0.000 on foot/limb
+    X-rays that have a dead-column border on one side
 """
 
 import numpy as np
@@ -188,6 +193,22 @@ def extract_features(image: np.ndarray) -> np.ndarray:
 # ─────────────────────────────────────────────
 
 def check_gradient_isotropy(gray):
+    # Pre-crop any solid dark lateral borders (e.g. scanner collimation strips,
+    # dead columns on foot/limb X-rays) before computing isotropy.
+    # A dark strip (<= 12% of max) occupying > 5% of width is stripped from
+    # each side so it doesn't dominate the gradient orientation histogram.
+    col_means = gray.mean(axis=0)
+    dark_thr  = gray.max() * 0.12
+    left  = 0
+    right = gray.shape[1]
+    while left  < gray.shape[1] // 3 and col_means[left]  <= dark_thr:
+        left  += 1
+    while right > gray.shape[1] * 2 // 3 and col_means[right-1] <= dark_thr:
+        right -= 1
+    # Only apply crop if a meaningful strip was found (> 3% of width)
+    if left > gray.shape[1] * 0.03 or right < gray.shape[1] * 0.97:
+        gray = gray[:, left:right]
+
     gx  = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     gy  = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     mag = np.sqrt(gx**2 + gy**2)
@@ -496,8 +517,10 @@ class MedicalImageValidator:
                     f"isotropy={iso:.3f}",
                     "> 0.25 (organic anatomy)"))
 
-        # Document check — MRI/CT have black backgrounds so raise threshold
-        extreme_thr = 0.75 if modality in ("mri", "ct") else 0.40
+        # Document check — MRI/CT/bone all have large black backgrounds and
+        # bright highlights (cortical bone, contrast agents) so raise threshold.
+        # Documents sit near 0.40; real bone X-rays routinely exceed 0.80.
+        extreme_thr = 0.75 if modality in ("mri", "ct", "bone") else 0.40
         ch.append(C("Not a document",
                     hsh["extreme_frac"] < extreme_thr,
                     f"extreme px={hsh['extreme_frac']:.3f}",
@@ -569,7 +592,7 @@ class MedicalImageValidator:
 
     def _tex(self, iso, hsh, modality="xray") -> float:
         i   = 1.0 if iso > 0.25 else iso / 0.25
-        thr = 0.75 if modality in ("mri","ct") else 0.40
+        thr = 0.75 if modality in ("mri","ct","bone") else 0.40
         h   = 1.0 if hsh["extreme_frac"] < thr else max(0.0, 1.0-hsh["extreme_frac"]/thr)
         return float(round((i + h) / 2.0, 3))
 

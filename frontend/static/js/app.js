@@ -152,8 +152,88 @@ document.addEventListener("DOMContentLoaded", () => {
     .getElementById("invalidBtn")
     .addEventListener("click", () => loadDemo(true));
 
+  setupLightbox(); // ← NEW
+
   log("FHE Medical Pipeline ready · input validator active");
 });
+
+// ─────────────────────────────────────────────
+//  LIGHTBOX  (fullscreen view for AI result)
+// ─────────────────────────────────────────────
+
+function setupLightbox() {
+  // Inject markup into DOM once
+  const markup = `
+    <div id="fhe-lightbox" role="dialog" aria-modal="true" aria-label="Full screen AI result">
+      <div id="fhe-lb-inner">
+        <button id="fhe-lb-close" aria-label="Close full screen">&#x2715;</button>
+        <canvas id="fhe-lb-canvas"></canvas>
+        <p id="fhe-lb-caption">AI result (decrypted) &mdash; click anywhere outside to close</p>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML("beforeend", markup);
+
+  const lb = document.getElementById("fhe-lightbox");
+  const lbClose = document.getElementById("fhe-lb-close");
+
+  // Close on backdrop click (not on the canvas/inner itself)
+  lb.addEventListener("click", (e) => {
+    if (e.target === lb) closeLightbox();
+  });
+  lbClose.addEventListener("click", closeLightbox);
+
+  // Close on Escape
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && lb.classList.contains("lb-open")) closeLightbox();
+  });
+
+  // Attach click to c3 wrapper once — and re-attach after pipeline renders
+  attachResultClick();
+}
+
+function attachResultClick() {
+  const wrap =
+    document.getElementById("c3wrap") ||
+    document.getElementById("c3").parentElement;
+  if (!wrap || wrap._lbAttached) return;
+  wrap._lbAttached = true;
+  wrap.style.cursor = "zoom-in";
+  wrap.title = "Click to view full screen";
+  // Zoom-in icon hint on hover (injected once)
+  if (!wrap.querySelector(".fhe-zoom-hint")) {
+    const hint = document.createElement("div");
+    hint.className = "fhe-zoom-hint";
+    hint.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+    </svg>`;
+    wrap.appendChild(hint);
+  }
+  wrap.addEventListener("click", () => {
+    const c3 = document.getElementById("c3");
+    if (c3.style.display === "none" || !c3.width) return; // no result yet
+    openLightbox(c3);
+  });
+}
+
+function openLightbox(sourceCanvas) {
+  const lb = document.getElementById("fhe-lightbox");
+  const lbCanvas = document.getElementById("fhe-lb-canvas");
+
+  // Copy pixels from c3 into the lightbox canvas at native resolution
+  lbCanvas.width = sourceCanvas.width;
+  lbCanvas.height = sourceCanvas.height;
+  lbCanvas.getContext("2d").drawImage(sourceCanvas, 0, 0);
+
+  lb.classList.add("lb-open");
+  document.body.style.overflow = "hidden";
+}
+
+function closeLightbox() {
+  const lb = document.getElementById("fhe-lightbox");
+  lb.classList.remove("lb-open");
+  document.body.style.overflow = "";
+}
 
 // ─────────────────────────────────────────────
 //  MODE TABS
@@ -307,7 +387,7 @@ function drawMedicalScan(ctx, w, h, mode) {
   ctx.fillStyle = "#060606";
   ctx.fillRect(0, 0, w, h);
 
-  if (mode === "xray" || mode === "bone") {
+  if (mode === "xray") {
     // Noise background
     for (let i = 0; i < 1500; i++) {
       const v = 140 + Math.random() * 60;
@@ -339,12 +419,53 @@ function drawMedicalScan(ctx, w, h, mode) {
     ctx.moveTo(w / 2, h * 0.15);
     ctx.lineTo(w / 2, h * 0.82);
     ctx.stroke();
-    if (mode === "xray") {
-      // Infiltrate hotspot
-      ctx.fillStyle = "rgba(240,150,60,0.18)";
-      ctx.beginPath();
-      ctx.ellipse(w * 0.62, h * 0.6, w * 0.09, h * 0.12, 0.2, 0, Math.PI * 2);
-      ctx.fill();
+    // Infiltrate hotspot
+    ctx.fillStyle = "rgba(240,150,60,0.18)";
+    ctx.beginPath();
+    ctx.ellipse(w * 0.62, h * 0.6, w * 0.09, h * 0.12, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (mode === "bone") {
+    // Long bone — dark medullary canal, bright cortical margins, flared epiphyses
+    const bx = w * 0.5,
+      bw = w * 0.13;
+    // Soft tissue surround
+    for (let i = 0; i < 600; i++) {
+      const v = 55 + Math.random() * 35;
+      ctx.fillStyle = `rgba(${v},${v},${v},${Math.random() * 0.07})`;
+      ctx.fillRect(
+        Math.random() * w,
+        Math.random() * h,
+        Math.random() * 5 + 1,
+        Math.random() * 4 + 1,
+      );
+    }
+    // Medullary canal (dark)
+    ctx.fillStyle = "rgba(18,18,18,1)";
+    ctx.fillRect(bx - bw * 0.42, h * 0.1, bw * 0.84, h * 0.8);
+    // Cortical bone left margin (bright)
+    ctx.fillStyle = "rgba(228,228,228,1)";
+    ctx.fillRect(bx - bw, h * 0.08, bw * 0.58, h * 0.84);
+    // Cortical bone right margin (bright)
+    ctx.fillRect(bx + bw * 0.42, h * 0.08, bw * 0.58, h * 0.84);
+    // Flared epiphysis — top
+    ctx.fillStyle = "rgba(195,195,195,0.9)";
+    ctx.beginPath();
+    ctx.ellipse(bx, h * 0.09, bw * 1.7, h * 0.09, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Flared epiphysis — bottom
+    ctx.beginPath();
+    ctx.ellipse(bx, h * 0.91, bw * 1.7, h * 0.09, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Trabecular texture in epiphyses
+    for (let i = 0; i < 180; i++) {
+      const tx = bx + (Math.random() - 0.5) * bw * 3.2;
+      const side = Math.random() > 0.5;
+      const ty = side
+        ? h * 0.03 + Math.random() * h * 0.12
+        : h * 0.85 + Math.random() * h * 0.12;
+      const v = 100 + Math.random() * 90;
+      ctx.fillStyle = `rgba(${v},${v},${v},0.55)`;
+      ctx.fillRect(tx, ty, Math.random() * 4 + 1, Math.random() * 3 + 1);
     }
   } else if (mode === "mri") {
     for (let y = 0; y < h; y += 2)
@@ -561,6 +682,18 @@ async function runPipeline() {
 
     if (!res.ok || data.status === "validation_failed") {
       const vdata = data.validation || {};
+      // "warn" means physics passed but ML was uncertain — same as a client
+      // warn, so allow the pipeline through rather than hard-blocking.
+      // Only stop on a genuine "fail" where physics checks also failed.
+      const serverStatus = (vdata.status || "fail").toLowerCase();
+      if (serverStatus === "warn") {
+        log(
+          `Server validator uncertain (${vdata.message || "warn"}) — running local demo`,
+          "log-warn",
+        );
+        runLocalDemo();
+        return;
+      }
       renderValidation({
         ...vdata,
         status: "fail",
@@ -568,9 +701,13 @@ async function runPipeline() {
       });
       showRejectedOverlay(
         vdata.message || "Validation failed",
-        vdata.hint || "",
+        vdata.hint ||
+          "Deploy the updated validator.py to the server to fix bone/MRI scans.",
       );
-      log("Pipeline blocked by server-side validation", "log-err");
+      log(
+        `Pipeline blocked · server validator score=${((vdata.score ?? 0) * 100) | 0}% · deploy updated validator.py`,
+        "log-err",
+      );
       return;
     }
 
@@ -590,8 +727,10 @@ async function runPipeline() {
 
     // ── Render result panel
     setProgress(90, "Decrypting with private key (client-side only)...");
-    if (data.result_b64)
+    if (data.result_b64) {
       setCanvas("c3", "data:image/png;base64," + data.result_b64);
+      attachResultClick(); // ← re-attach in case c3's parent was re-created
+    }
     markStage("ps-process", "complete");
     markStage("ps-decrypt", "complete");
     markStage("ps-result", "complete");
@@ -653,25 +792,73 @@ function runLocalDemo() {
     d[i] = d[i + 1] = d[i + 2] = g;
   }
   ctx.putImageData(id, 0, 0);
-  // Heatmap overlay
-  const hg = ctx.createRadialGradient(
-    c3.width * 0.62,
-    c3.height * 0.6,
-    0,
-    c3.width * 0.62,
-    c3.height * 0.6,
-    c3.width * 0.15,
-  );
-  hg.addColorStop(0, "rgba(226,75,74,0.7)");
-  hg.addColorStop(0.5, "rgba(239,159,39,0.4)");
-  hg.addColorStop(1, "rgba(55,138,221,0)");
-  ctx.fillStyle = hg;
-  ctx.fillRect(0, 0, c3.width, c3.height);
+
+  // ── Mode-specific overlay (no red flood on bone/CT/MRI) ──────────
+  if (state.mode === "xray") {
+    // Red/orange pneumonia infiltrate — right lower lobe
+    const hg = ctx.createRadialGradient(
+      c3.width * 0.62,
+      c3.height * 0.6,
+      0,
+      c3.width * 0.62,
+      c3.height * 0.6,
+      c3.width * 0.15,
+    );
+    hg.addColorStop(0, "rgba(226,75,74,0.70)");
+    hg.addColorStop(0.5, "rgba(239,159,39,0.40)");
+    hg.addColorStop(1, "rgba(55,138,221,0)");
+    ctx.fillStyle = hg;
+    ctx.fillRect(0, 0, c3.width, c3.height);
+  } else if (state.mode === "bone") {
+    // Yellow/orange fracture highlight — small localised spot on shaft
+    const hg = ctx.createRadialGradient(
+      c3.width * 0.5,
+      c3.height * 0.42,
+      0,
+      c3.width * 0.5,
+      c3.height * 0.42,
+      c3.width * 0.07,
+    );
+    hg.addColorStop(0, "rgba(255,225,0,0.85)"); // bright yellow core
+    hg.addColorStop(0.5, "rgba(255,140,0,0.50)"); // orange ring
+    hg.addColorStop(1, "rgba(255,100,0,0)");
+    ctx.fillStyle = hg;
+    ctx.fillRect(0, 0, c3.width, c3.height);
+    // Thin fracture line across shaft
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,210,0,0.9)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(c3.width * 0.42, c3.height * 0.39);
+    ctx.lineTo(c3.width * 0.58, c3.height * 0.45);
+    ctx.stroke();
+    ctx.restore();
+  } else if (state.mode === "ct") {
+    // Cyan/teal organ segmentation tint — centred
+    const hg = ctx.createRadialGradient(
+      c3.width * 0.5,
+      c3.height * 0.5,
+      0,
+      c3.width * 0.5,
+      c3.height * 0.5,
+      c3.width * 0.3,
+    );
+    hg.addColorStop(0, "rgba(0,210,210,0.45)");
+    hg.addColorStop(0.6, "rgba(0,130,190,0.22)");
+    hg.addColorStop(1, "rgba(0,80,160,0)");
+    ctx.fillStyle = hg;
+    ctx.fillRect(0, 0, c3.width, c3.height);
+  }
+  // mri — brain.py already draws the tumour overlay server-side;
+  // in local demo the grayscale brain canvas is fine as-is.
   document.getElementById("ph3").style.display = "none";
   c3.style.display = "block";
   markStage("ps-result", "complete");
   document.getElementById("tag3").textContent = "decrypted";
   document.getElementById("tag3").className = "tag tag-result";
+
+  attachResultClick(); // ← ensure click is live after local demo
 
   // Fake metrics
   renderMetrics({
@@ -680,16 +867,50 @@ function runLocalDemo() {
     total_time_s: 2.3,
     security_bits: 128,
   });
-  renderDiagnosis({
-    condition: "Pneumonia detected (demo)",
-    risk_pct: 92,
-    model: "NIH CheXNet (simulated)",
-    differentials: [
-      { label: "Pneumonia", pct: 92 },
-      { label: "Pleural effusion", pct: 41 },
-      { label: "Normal", pct: 8 },
-    ],
-  });
+  // ── Mode-specific demo diagnosis ─────────────────────────────────
+  const demoDiagnosis = {
+    xray: {
+      condition: "Pneumonia detected (demo)",
+      risk_pct: 92,
+      model: "NIH CheXNet (simulated)",
+      differentials: [
+        { label: "Pneumonia", pct: 92 },
+        { label: "Pleural effusion", pct: 41 },
+        { label: "Normal", pct: 8 },
+      ],
+    },
+    bone: {
+      condition: "Cortical irregularity detected (demo)",
+      risk_pct: 74,
+      model: "MURA DenseNet (simulated)",
+      differentials: [
+        { label: "Fracture", pct: 74 },
+        { label: "Bone contusion", pct: 22 },
+        { label: "Normal variant", pct: 9 },
+      ],
+    },
+    mri: {
+      condition: "Tumour boundary mapped (demo)",
+      risk_pct: 81,
+      model: "BraTS U-Net (simulated)",
+      differentials: [
+        { label: "Grade III–IV", pct: 81 },
+        { label: "Grade I–II", pct: 13 },
+        { label: "Normal tissue", pct: 6 },
+      ],
+    },
+    ct: {
+      condition: "Multi-organ segmentation complete (demo)",
+      risk_pct: null,
+      model: "TotalSegmentator (simulated)",
+      differentials: [
+        { label: "Liver", pct: 96 },
+        { label: "Spleen", pct: 91 },
+        { label: "Kidneys", pct: 88 },
+      ],
+    },
+  };
+  renderDiagnosis(demoDiagnosis[state.mode] || demoDiagnosis.xray);
   document.getElementById("step5").style.display = "block";
   log(
     "Local demo complete · start Flask backend for real FHE processing",
