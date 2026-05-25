@@ -243,6 +243,10 @@ class FHEEngine:
     def _sim_decrypt(self, processed_ct: dict) -> tuple:
         """
         Simulate decryption: recover original, apply chosen image operation.
+
+        PATCHED: tumor_boundary is routed through brain.py preprocess_brain()
+        which runs the full skull-strip + BraTS U-Net segmentation pipeline.
+        All other operations still go through ImageProcessor.apply_operation().
         """
         original = processed_ct.get("original")
         shape    = processed_ct.get("shape")
@@ -251,11 +255,62 @@ class FHEEngine:
         if original is None:
             original = np.random.rand(*shape).astype(np.float32)
 
-        # Apply the image operation to the recovered plaintext
+        img_u8 = (np.clip(original, 0, 1) * 255).astype(np.uint8)
+
+        # ── Brain MRI tumour boundary — use brain.py pipeline ────────────
+        if op == "tumor_boundary":
+            try:
+                from backend.models.brain import preprocess_brain, filter_brain_differentials
+                import cv2
+
+                # preprocess_brain expects BGR
+                if img_u8.ndim == 2:
+                    bgr = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+                elif img_u8.shape[2] == 3:
+                    bgr = cv2.cvtColor(img_u8, cv2.COLOR_RGB2BGR)
+                else:
+                    bgr = img_u8
+
+                brain_result = preprocess_brain(bgr)
+                result       = cv2.cvtColor(brain_result.display_image,
+                                             cv2.COLOR_BGR2RGB)
+
+                ai_results = processed_ct.get("ai_results",
+                                               self._fake_ai_results(op)).copy()
+
+                # Inject real brain metrics from the pipeline
+                ai_results["findings"] = {
+                    "volume_cm3"    : round(brain_result.brats.tumour_volume_px / 1000, 1),
+                    "enhancement"   : brain_result.brats.has_tumour,
+                    "tumour_classes": brain_result.brats.tumour_classes,
+                    "skull_method"  : brain_result.skull_strip.method,
+                    "pipeline_ms"   : brain_result.total_elapsed_ms,
+                }
+                ai_results["risk_pct"] = (
+                    round(brain_result.brats.confidence * 100)
+                    if brain_result.brats.has_tumour else 0
+                )
+
+                # Suppress meningioma if lesion is intra-axial
+                if "differentials" in ai_results:
+                    ai_results["differentials"] = filter_brain_differentials(
+                        ai_results["differentials"], brain_result.brats)
+
+                logger.info(
+                    f"Brain pipeline: has_tumour={brain_result.brats.has_tumour} "
+                    f"confidence={brain_result.brats.confidence} "
+                    f"intra_axial={brain_result.brats.is_intra_axial}"
+                )
+                return result, ai_results
+
+            except Exception as e:
+                logger.warning(f"brain.py pipeline failed ({e}), falling back to image_processor")
+                # Fall through to generic path below
+
+        # ── All other operations ──────────────────────────────────────────
         from backend.utils.image_processor import ImageProcessor
-        proc     = ImageProcessor()
-        img_u8   = (np.clip(original, 0, 1) * 255).astype(np.uint8)
-        result   = proc.apply_operation(img_u8, op)
+        proc   = ImageProcessor()
+        result = proc.apply_operation(img_u8, op)
 
         ai_results = processed_ct.get("ai_results", self._fake_ai_results(op))
         return result, ai_results
